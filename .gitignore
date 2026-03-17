@@ -1,0 +1,11 @@
+.github/
+PROJECT_REQUIREMENTS.md
+DEVELOPMENT_ROADMAP.md
+AGENT_CONTEXT.md
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.pytest_cache/

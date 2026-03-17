@@ -1,0 +1,59 @@
+version: '3.9'
+
+services:
+  user:
+    build: ./services/user
+    container_name: shopsocial_user
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+
+  product:
+    build: ./services/product
+    container_name: shopsocial_product
+    ports:
+      - "5000:5000"
+    depends_on:
+      - db
+      - redis
+
+  chat:
+    build: ./services/chat
+    container_name: shopsocial_chat
+    ports:
+      - "9000:9000"
+    depends_on:
+      - redis
+
+  order:
+    build: ./services/order
+    container_name: shopsocial_order
+    ports:
+      - "7000:7000"
+    depends_on:
+      - db
+      - redis
+
+  db:
+    image: postgres:15
+    container_name: shopsocial_db
+    env_file:
+      - ./infrastructure/postgres.env
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: shopsocial_redis
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - ./infrastructure/redis.conf:/usr/local/etc/redis/redis.conf
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
