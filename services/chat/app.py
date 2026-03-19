@@ -5,22 +5,41 @@ import logging
 import json
 from collections import defaultdict
 from datetime import datetime
+
 import os
 import jwt
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, scoped_session
+from models import Base, ChatMessage
 
 logging.basicConfig(level=logging.INFO)
 
+
 PORT = 9000
+
+# Database config
+POSTGRES_DB = os.environ.get('POSTGRES_DB', 'shopsocial')
+POSTGRES_USER = os.environ.get('POSTGRES_USER', 'shopsocial')
+POSTGRES_PASSWORD = os.environ.get('POSTGRES_PASSWORD', 'shopsocial')
+POSTGRES_HOST = os.environ.get('POSTGRES_HOST', 'db')
+POSTGRES_PORT = os.environ.get('POSTGRES_PORT', '5432')
+SQLALCHEMY_DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
+SessionLocal = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=engine))
+
+def create_tables():
+    Base.metadata.create_all(bind=engine)
+
 
 
 # room_id (product_id) -> set of websockets
 rooms = defaultdict(set)
-# room_id -> list of message dicts (history)
-history = defaultdict(list)
 
 SERVICE_JWT_SECRET = os.environ.get("SERVICE_JWT_SECRET", "changeme")
 
 async def handler(websocket, path):
+    db = SessionLocal()
     # Expect JWT in Sec-WebSocket-Protocol header as 'jwt=<token>'
     jwt_token = None
     for proto in websocket.request_headers.get_all('Sec-WebSocket-Protocol', []):
@@ -49,39 +68,59 @@ async def handler(websocket, path):
         logging.info(f"Client {websocket.remote_address} joined room {room_id}")
         await websocket.send(json.dumps({"info": f"Joined room {room_id}"}))
 
-        # Send recent chat history (last 50 messages)
-        if history[room_id]:
-            await websocket.send(json.dumps({
-                "history": history[room_id][-50:]
-            }))
+        # Send recent chat history (last 50 messages) from DB
+        recent_msgs = db.query(ChatMessage).filter(ChatMessage.room_id == room_id).order_by(ChatMessage.timestamp.desc()).limit(50).all()
+        if recent_msgs:
+            # Reverse to chronological order
+            msgs = [
+                {
+                    "room": m.room_id,
+                    "from": m.sender,
+                    "content": m.content,
+                    "timestamp": m.timestamp.isoformat() + "Z"
+                } for m in reversed(recent_msgs)
+            ]
+            await websocket.send(json.dumps({"history": msgs}))
 
         async for message in websocket:
             try:
                 data = json.loads(message)
                 if data.get("action") == "message" and "content" in data:
-                    msg = {
-                        "room": room_id,
-                        "from": str(websocket.remote_address),
-                        "content": data["content"],
-                        "timestamp": datetime.utcnow().isoformat() + "Z"
+                    msg = ChatMessage(
+                        room_id=room_id,
+                        sender=str(websocket.remote_address),
+                        content=data["content"],
+                        timestamp=datetime.utcnow()
+                    )
+                    db.add(msg)
+                    db.commit()
+                    # Prepare broadcast dict
+                    msg_dict = {
+                        "room": msg.room_id,
+                        "from": msg.sender,
+                        "content": msg.content,
+                        "timestamp": msg.timestamp.isoformat() + "Z"
                     }
-                    # Save to history (max 1000 messages per room)
-                    history[room_id].append(msg)
-                    if len(history[room_id]) > 1000:
-                        history[room_id] = history[room_id][-1000:]
-                    logging.info(f"Broadcasting message in room {room_id}: {msg}")
+                    logging.info(f"Broadcasting message in room {room_id}: {msg_dict}")
                     # Broadcast to all in the same room
                     for conn in list(rooms[room_id]):
                         if conn.open:
                             try:
-                                await conn.send(json.dumps(msg))
+                                await conn.send(json.dumps(msg_dict))
                             except Exception as send_err:
                                 logging.error(f"Send error: {send_err}")
                 elif data.get("action") == "history":
-                    # Client requests recent history
-                    await websocket.send(json.dumps({
-                        "history": history[room_id][-50:]
-                    }))
+                    # Client requests recent history from DB
+                    recent_msgs = db.query(ChatMessage).filter(ChatMessage.room_id == room_id).order_by(ChatMessage.timestamp.desc()).limit(50).all()
+                    msgs = [
+                        {
+                            "room": m.room_id,
+                            "from": m.sender,
+                            "content": m.content,
+                            "timestamp": m.timestamp.isoformat() + "Z"
+                        } for m in reversed(recent_msgs)
+                    ]
+                    await websocket.send(json.dumps({"history": msgs}))
                 else:
                     await websocket.send(json.dumps({"error": "Invalid message format."}))
             except Exception as e:
@@ -92,6 +131,7 @@ async def handler(websocket, path):
     except Exception as e:
         logging.error(f"Unexpected error: {e}")
     finally:
+        db.close()
         if room_id and websocket in rooms[room_id]:
             rooms[room_id].remove(websocket)
             if not rooms[room_id]:
@@ -99,6 +139,7 @@ async def handler(websocket, path):
 
 
 async def main():
+    create_tables()
     async with websockets.serve(handler, "0.0.0.0", PORT):
         logging.info(f"WebSocket server started on port {PORT}")
         await asyncio.Future()  # run forever

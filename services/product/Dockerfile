@@ -6,7 +6,7 @@ WORKDIR /app
 COPY . .
 
 RUN pip install --upgrade pip && \
-    pip install flask graphene flask-graphql psycopg2-binary redis
+    pip install flask graphene flask-graphql psycopg2-binary redis sqlalchemy PyJWT
 
 EXPOSE 5000
 

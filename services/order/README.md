@@ -8,7 +8,14 @@ All internal API calls require a JWT in the Authorization header:
 Tokens are validated on every protected endpoint.
 # Order Service
 
+
 Flask microservice for order processing in ShopSocial. Handles order creation, status updates, and background processing with Celery.
+
+## Architecture
+
+- Uses SQLAlchemy ORM with a persistent Postgres database (see docker-compose.yml).
+- All order data is stored in the database and loaded on request.
+- Models are defined in models.py; DB session is managed in app.py.
 
 ## Features
 - Create, retrieve, and update orders

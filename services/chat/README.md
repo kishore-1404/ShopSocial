@@ -1,6 +1,13 @@
 # Chat Service
 
+
 WebSocket-based chat microservice for ShopSocial. Enables real-time chat in product rooms.
+
+## Architecture
+
+- Uses SQLAlchemy ORM with a persistent Postgres database (see docker-compose.yml).
+- All chat history is stored in the database and loaded on join/history request.
+- Models are defined in models.py; DB session is managed in app.py.
 
 ## Features
 - Real-time chat rooms per product (room = product_id)

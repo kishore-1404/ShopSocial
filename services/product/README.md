@@ -1,6 +1,13 @@
 # Product Service
 
+
 Flask + GraphQL microservice for product catalog and product posts in ShopSocial.
+
+## Architecture
+
+- Uses SQLAlchemy ORM with a persistent Postgres database (see docker-compose.yml).
+- All data access is via the database; in-memory lists are no longer used.
+- Models are defined in models.py; DB session is managed in app.py and injected into GraphQL context.
 
 ## Features
 - Product catalog (CRUD via GraphQL)

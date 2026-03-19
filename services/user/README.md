@@ -1,6 +1,15 @@
 # User Service
 
+
 This service provides user management and social features for ShopSocial, built with Django and Django REST Framework (DRF).
+
+## Architecture
+
+This service uses a modular architecture with a dedicated service layer:
+- **accounts/service.py** contains all business logic and database operations.
+- **accounts/views.py** contains only HTTP request/response handling, delegating to the service layer.
+
+This separation improves maintainability, testability, and production readiness.
 
 ## Features
 - User registration and authentication

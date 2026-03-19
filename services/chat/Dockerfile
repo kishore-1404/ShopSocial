@@ -6,7 +6,7 @@ WORKDIR /app
 COPY . .
 
 RUN pip install --upgrade pip && \
-    pip install websockets redis
+    pip install websockets redis psycopg2-binary sqlalchemy
 
 EXPOSE 9000
 

@@ -92,13 +92,18 @@ TEMPLATES = [
 WSGI_APPLICATION = 'userservice.wsgi.application'
 
 
+
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
-
+import os
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': os.environ.get('POSTGRES_DB', 'shopsocial'),
+        'USER': os.environ.get('POSTGRES_USER', 'shopsocial'),
+        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'shopsocial'),
+        'HOST': os.environ.get('POSTGRES_HOST', 'db'),
+        'PORT': os.environ.get('POSTGRES_PORT', '5432'),
     }
 }
 

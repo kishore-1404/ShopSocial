@@ -6,7 +6,7 @@ WORKDIR /app
 COPY . .
 
 RUN pip install --upgrade pip && \
-    pip install celery psycopg2-binary redis
+    pip install celery psycopg2-binary redis sqlalchemy
 
 EXPOSE 7000
 

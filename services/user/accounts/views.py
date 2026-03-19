@@ -5,28 +5,39 @@ from django.contrib.auth.models import User
 from rest_framework.serializers import ModelSerializer, Serializer, IntegerField
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from .models import Profile, Follower, Post, Like, Comment
+from .service import (
+	create_user_with_profile, get_profile, update_profile,
+	follow_user, unfollow_user, get_feed,
+	like_post, unlike_post, add_comment, get_comments
+)
 
 class CommentSerializer(ModelSerializer):
 	class Meta:
 		model = Comment
 		fields = ('id', 'user', 'post', 'content', 'created_at', 'updated_at')
 
-class CommentCreateView(generics.CreateAPIView):
-	serializer_class = CommentSerializer
+class CommentCreateView(views.APIView):
 	permission_classes = [IsAuthenticated]
 
-	def perform_create(self, serializer):
-		serializer.save(user=self.request.user)
+	def post(self, request):
+		post_id = request.data.get('post')
+		content = request.data.get('content')
+		if not post_id or not content:
+			return Response({'detail': 'post and content required'}, status=400)
+		comment, msg = add_comment(request.user, post_id, content)
+		if not comment:
+			return Response({'detail': msg}, status=404)
+		return Response(CommentSerializer(comment).data, status=201)
 
-class CommentListView(generics.ListAPIView):
-	serializer_class = CommentSerializer
+class CommentListView(views.APIView):
 	permission_classes = [IsAuthenticated]
 
-	def get_queryset(self):
-		post_id = self.request.query_params.get('post_id')
+	def get(self, request):
+		post_id = request.query_params.get('post_id')
 		if not post_id:
-			return Comment.objects.none()
-		return Comment.objects.filter(post_id=post_id).order_by('created_at')
+			return Response({'detail': 'post_id required'}, status=400)
+		comments = get_comments(post_id)
+		return Response(CommentSerializer(comments, many=True).data)
 
 class LikeSerializer(ModelSerializer):
 	class Meta:
@@ -40,14 +51,9 @@ class LikePostView(views.APIView):
 		post_id = request.data.get('post_id')
 		if not post_id:
 			return Response({'detail': 'post_id required'}, status=400)
-		try:
-			post = Post.objects.get(id=post_id)
-		except Post.DoesNotExist:
-			return Response({'detail': 'Post not found'}, status=404)
-		obj, created = Like.objects.get_or_create(user=request.user, post=post)
-		if not created:
-			return Response({'detail': 'Already liked'}, status=400)
-		return Response({'detail': 'Post liked'}, status=201)
+		created, msg = like_post(request.user, post_id)
+		status_code = 201 if created else 400 if msg == 'Already liked' else 404
+		return Response({'detail': msg}, status=status_code)
 
 class UnlikePostView(views.APIView):
 	permission_classes = [IsAuthenticated]
@@ -56,28 +62,21 @@ class UnlikePostView(views.APIView):
 		post_id = request.data.get('post_id')
 		if not post_id:
 			return Response({'detail': 'post_id required'}, status=400)
-		try:
-			post = Post.objects.get(id=post_id)
-		except Post.DoesNotExist:
-			return Response({'detail': 'Post not found'}, status=404)
-		deleted, _ = Like.objects.filter(user=request.user, post=post).delete()
-		if deleted:
-			return Response({'detail': 'Unliked'}, status=200)
-		return Response({'detail': 'Not liked'}, status=400)
+		deleted, msg = unlike_post(request.user, post_id)
+		status_code = 200 if deleted else 400 if msg == 'Not liked' else 404
+		return Response({'detail': msg}, status=status_code)
 
 class PostSerializer(ModelSerializer):
 	class Meta:
 		model = Post
 		fields = ('id', 'user', 'content', 'created_at', 'updated_at')
 
-class FeedView(generics.ListAPIView):
-	serializer_class = PostSerializer
+class FeedView(views.APIView):
 	permission_classes = [IsAuthenticated]
 
-	def get_queryset(self):
-		user = self.request.user
-		following_ids = user.following.values_list('follows_id', flat=True)
-		return Post.objects.filter(user__id__in=following_ids).order_by('-created_at')
+	def get(self, request):
+		posts = get_feed(request.user)
+		return Response(PostSerializer(posts, many=True).data)
 
 # ...existing RegisterSerializer, RegisterView, ProfileSerializer, ProfileView...
 
@@ -96,15 +95,9 @@ class FollowUserView(views.APIView):
 		target_id = request.data.get('user_id')
 		if not target_id:
 			return Response({'detail': 'user_id required'}, status=400)
-		if int(target_id) == request.user.id:
-			return Response({'detail': 'Cannot follow yourself'}, status=400)
-		target = User.objects.filter(id=target_id).first()
-		if not target:
-			return Response({'detail': 'User not found'}, status=404)
-		obj, created = Follower.objects.get_or_create(user=request.user, follows=target)
-		if not created:
-			return Response({'detail': 'Already following'}, status=400)
-		return Response({'detail': 'Now following'}, status=201)
+		created, msg = follow_user(request.user, int(target_id))
+		status_code = 201 if created else 400 if msg == 'Already following' or msg == 'Cannot follow yourself' else 404
+		return Response({'detail': msg}, status=status_code)
 
 class UnfollowUserView(views.APIView):
 	permission_classes = [IsAuthenticated]
@@ -113,13 +106,9 @@ class UnfollowUserView(views.APIView):
 		target_id = request.data.get('user_id')
 		if not target_id:
 			return Response({'detail': 'user_id required'}, status=400)
-		target = User.objects.filter(id=target_id).first()
-		if not target:
-			return Response({'detail': 'User not found'}, status=404)
-		deleted, _ = Follower.objects.filter(user=request.user, follows=target).delete()
-		if deleted:
-			return Response({'detail': 'Unfollowed'}, status=200)
-		return Response({'detail': 'Not following'}, status=400)
+		deleted, msg = unfollow_user(request.user, int(target_id))
+		status_code = 200 if deleted else 400 if msg == 'Not following' else 404
+		return Response({'detail': msg}, status=status_code)
 
 class FollowersListView(generics.ListAPIView):
 	serializer_class = FollowerSerializer
@@ -148,13 +137,11 @@ class RegisterSerializer(ModelSerializer):
 		extra_kwargs = {'password': {'write_only': True}}
 
 	def create(self, validated_data):
-		user = User.objects.create_user(
+		return create_user_with_profile(
 			username=validated_data['username'],
 			password=validated_data['password'],
 			email=validated_data.get('email', '')
 		)
-		Profile.objects.create(user=user)  # Create profile on registration
-		return user
 
 class RegisterView(generics.CreateAPIView):
 	queryset = User.objects.all()
@@ -174,9 +161,19 @@ class ProfileSerializer(ModelSerializer):
 		model = Profile
 		fields = ('bio', 'avatar', 'location', 'created_at', 'updated_at')
 
-class ProfileView(generics.RetrieveUpdateAPIView):
-	serializer_class = ProfileSerializer
+class ProfileView(views.APIView):
 	permission_classes = [IsAuthenticated]
 
-	def get_object(self):
-		return self.request.user.profile
+	def get(self, request):
+		profile = get_profile(request.user)
+		return Response(ProfileSerializer(profile).data)
+
+	def put(self, request):
+		data = request.data
+		profile = update_profile(
+			request.user,
+			bio=data.get('bio'),
+			avatar=data.get('avatar'),
+			location=data.get('location')
+		)
+		return Response(ProfileSerializer(profile).data)
