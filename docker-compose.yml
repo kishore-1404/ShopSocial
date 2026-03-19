@@ -4,6 +4,8 @@ services:
   user:
     build: ./services/user
     container_name: shopsocial_user
+    env_file:
+      - .env
     ports:
       - "8000:8000"
     depends_on:
@@ -13,6 +15,8 @@ services:
   product:
     build: ./services/product
     container_name: shopsocial_product
+    env_file:
+      - .env
     ports:
       - "5000:5000"
     depends_on:
@@ -22,6 +26,8 @@ services:
   chat:
     build: ./services/chat
     container_name: shopsocial_chat
+    env_file:
+      - .env
     ports:
       - "9000:9000"
     depends_on:
@@ -30,6 +36,8 @@ services:
   order:
     build: ./services/order
     container_name: shopsocial_order
+    env_file:
+      - .env
     ports:
       - "7000:7000"
     depends_on:

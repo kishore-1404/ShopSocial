@@ -1,3 +1,4 @@
+
 .github/
 PROJECT_REQUIREMENTS.md
 DEVELOPMENT_ROADMAP.md
@@ -9,3 +10,4 @@ __pycache__/
 *.pyd
 *.log
 .pytest_cache/
+.env
