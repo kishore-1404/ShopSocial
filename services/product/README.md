@@ -1,15 +1,21 @@
-## Inter-service authentication
+# Product Service
 
-All internal API calls require a JWT in the Authorization header:
+Flask + GraphQL microservice for product catalog and product posts in ShopSocial.
 
-- `Authorization: Bearer <token>`
-- Secret: from `SERVICE_JWT_SECRET` env var (HS256)
+## Features
+- Product catalog (CRUD via GraphQL)
+- Product categories
+- Product posts (user-generated content)
+- Product search (by name, category)
+- Inter-service authentication (JWT, HS256)
 
-Tokens are validated on every protected endpoint.
-## Product Search
+## API
+- **GraphQL endpoint:** `/graphql` (POST)
+- **Entry point:** `app.py`
+- **Schema:** `schema.py`
 
-The GraphQL API exposes a `searchProducts` query:
-
+### Example Queries
+#### Product Search
 ```graphql
 query {
 	searchProducts(name: "shirt") {
@@ -20,68 +26,56 @@ query {
 	}
 }
 ```
-## Product Posts
-
-Product posts are modeled in `models.py` as `ProductPost`:
-- `id`, `product_id`, `user_id`, `content`, `timestamp`
-
-The GraphQL API exposes a `posts` query:
-
+#### Product Posts
 ```graphql
 query {
 	posts {
 		id
 		product { name }
-		user_id
+		userId
 		content
 		timestamp
 	}
 }
 ```
+
 ## Models
+- **Product**: id, name, description, price, category_id
+- **Category**: id, name, description
+- **ProductPost**: id, product_id, user_id, content, timestamp
 
-Models are defined in `models.py` using SQLAlchemy:
-- `Product`: id, name, description, price, category_id
-- `Category`: id, name, description
+Models are defined in `models.py` using SQLAlchemy. The current API uses in-memory demo data; integrate a real DB for production.
 
-For now, the GraphQL API uses in-memory demo data. Integrate with a real database and migrations for production.
+## Authentication
+All internal API calls require a JWT in the Authorization header:
+- `Authorization: Bearer <token>`
+- Secret: from `SERVICE_JWT_SECRET` env var (HS256)
+Tokens are validated on every protected endpoint.
 
-## Migrations
-
-To set up the database tables, use Alembic or Flask-Migrate (not yet included).
-# ShopSocial Product Service
-This is the Flask + GraphQL microservice for product catalog and posts.
-## Development
-- Entry point: `app.py`
-- GraphQL endpoint: `/graphql`
-- Schema defined in `schema.py`
-## Running locally
-1. Ensure the root `.venv` is activated and dependencies are installed via `uv`:
-	```bash
-	uv pip install flask graphene
-	```
+## Setup & Running Locally
+1. Activate the root `.venv` and install dependencies:
+	 ```sh
+	 uv pip install flask graphene
+	 ```
 2. Run the service:
-	```bash
-	python services/product/app.py
-## Dependencies
+	 ```sh
+	 python services/product/app.py
+	 ```
 
-- flask
-- graphene
-
-All dependencies are managed in the root `.venv` using `uv` at the project root.
 ## Usage
-Once running, you can test the GraphQL endpoint with:
-
-```bash
+Test the GraphQL endpoint:
+```sh
 curl -X POST -H "Content-Type: application/json" \
 	--data '{"query": "{ hello }"}' \
 	http://localhost:5000/graphql
 ```
-
-You should receive:
+Response:
 ```json
 {"data":{"hello":"Hello, ShopSocial!"}}
 ```
-# Product Service
 
-Flask + GraphQL for product catalog and posts.
+## Migrations
+To set up DB tables, use Alembic or Flask-Migrate (not yet included).
+
+---
+*This README was auto-generated and merges all useful information from previous documentation.*

@@ -6,68 +6,78 @@ All internal API calls require a JWT in the Authorization header:
 - Secret: from `SERVICE_JWT_SECRET` env var (HS256)
 
 Tokens are validated on every protected endpoint.
-# ShopSocial Order Service
+# Order Service
 
-This is the order processing microservice for ShopSocial.
+Flask microservice for order processing in ShopSocial. Handles order creation, status updates, and background processing with Celery.
 
-## Development
+## Features
+- Create, retrieve, and update orders
+- Order status lifecycle (pending, paid, shipped, completed, cancelled)
+- Background order processing (Celery + Redis)
+- Webhook notifications on status update
+- JWT-based inter-service authentication (HS256)
 
-- Entry point: `app.py`
-- Runs on port 7000
-- Uses Flask (Python)
+## API Endpoints
+| Method | Endpoint                        | Description                        | Auth Required |
+|--------|----------------------------------|------------------------------------|---------------|
+| POST   | /orders                         | Create order                       | Yes           |
+| GET    | /orders/<order_id>              | Get order by ID                    | Yes           |
+| PATCH  | /orders/<order_id>/status       | Update order status (+webhook)     | Yes           |
+| POST   | /orders/<order_id>/process      | Process order in background        | Yes           |
+| GET    | /                              | Health check                       | No            |
 
-## Running locally
+## Models
+- **Order**: id, user_id, product_ids, total, status, created_at
+- **OrderStatus**: pending, paid, shipped, completed, cancelled
 
-1. Ensure the root `.venv` is activated and dependencies are installed via `uv`.
-2. Install the required package:
-	 ```bash
-	 uv pip install flask
+## Authentication
+All internal API calls require a JWT in the Authorization header:
+- `Authorization: Bearer <token>`
+- Secret: from `SERVICE_JWT_SECRET` env var (HS256)
+Tokens are validated on every protected endpoint.
+
+## Setup & Running Locally
+1. Activate the root `.venv` and install dependencies:
+	 ```sh
+	 uv pip install flask celery redis
 	 ```
+2. Start Redis (see infrastructure/redis.conf).
 3. Run the service:
-	 ```bash
+	 ```sh
 	 python services/order/app.py
 	 ```
+4. Start the Celery worker:
+	 ```sh
+	 celery -A celery_worker.celery_app worker --loglevel=info
+	 ```
 
-- Health check endpoint at `/`
-- Create order: `POST /orders` (fields: user_id, product_ids, total)
-- Get order: `GET /orders/<order_id>`
-
-- Update order status: `PATCH /orders/<order_id>/status` (fields: status, optional webhook_url)
-### Example: Update order status with webhook
-```bash
-curl -X PATCH -H "Content-Type: application/json" \
-	-d '{"status": "shipped", "webhook_url": "http://example.com/webhook"}' \
-	http://localhost:7000/orders/1/status
-```
-
-- Process order in background: `POST /orders/<order_id>/process`
-
-## Celery Worker
-
-Start the Celery worker (requires Redis running at `redis://redis:6379/0`):
-```bash
-celery -A celery_worker.celery_app worker --loglevel=info
-```
-
-### Example: Trigger background processing
-```bash
-curl -X POST http://localhost:7000/orders/1/process
-```
-
-### Example: Create order
-```bash
+## Usage Examples
+### Create order
+```sh
 curl -X POST -H "Content-Type: application/json" \
 	-d '{"user_id": 1, "product_ids": [101,102], "total": 49.99}' \
 	http://localhost:7000/orders
 ```
-
-### Example: Update order status
-```bash
+### Update order status
+```sh
 curl -X PATCH -H "Content-Type: application/json" \
 	-d '{"status": "paid"}' \
 	http://localhost:7000/orders/1/status
 ```
+### Update order status with webhook
+```sh
+curl -X PATCH -H "Content-Type: application/json" \
+	-d '{"status": "shipped", "webhook_url": "http://example.com/webhook"}' \
+	http://localhost:7000/orders/1/status
+```
+### Trigger background processing
+```sh
+curl -X POST http://localhost:7000/orders/1/process
+```
 
-## Next steps
-- Add Celery for background jobs
-- Add webhook notifications
+## Next Steps
+- Integrate persistent DB for orders
+- Expand webhook/event support
+
+---
+*This README was auto-generated and merges all useful information from previous documentation.*
