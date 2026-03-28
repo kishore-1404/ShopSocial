@@ -1,48 +1,130 @@
 
-
 services:
   user:
-    build: ./services/user
+    build:
+      context: ./services
+      dockerfile: user/Dockerfile
     container_name: shopsocial_user
     env_file:
       - .env
+    environment:
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET}
+    command: ["sh", "-c", "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"]
     ports:
       - "8000:8000"
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8000)); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   product:
-    build: ./services/product
+    build:
+      context: ./services
+      dockerfile: product/Dockerfile
     container_name: shopsocial_product
     env_file:
       - .env
+    environment:
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET}
+    command: ["python", "app.py"]
     ports:
       - "5000:5000"
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, sys; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=2); sys.exit(0)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   chat:
-    build: ./services/chat
+    build:
+      context: ./services
+      dockerfile: chat/Dockerfile
     container_name: shopsocial_chat
     env_file:
       - .env
+    environment:
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET}
+    command: ["python", "app.py"]
     ports:
       - "9000:9000"
     depends_on:
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',9000)); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   order:
-    build: ./services/order
+    build:
+      context: ./services
+      dockerfile: order/Dockerfile
     container_name: shopsocial_order
     env_file:
       - .env
+    environment:
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET}
+    command: ["python", "app.py"]
     ports:
       - "7000:7000"
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',7000)); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  order_worker:
+    build:
+      context: ./services
+      dockerfile: order/Dockerfile
+    container_name: shopsocial_order_worker
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET}
+    command: ["celery", "-A", "celery_worker.celery_app", "worker", "--loglevel=info"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   db:
     image: postgres:15
@@ -53,6 +135,12 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-shopsocial} -d ${POSTGRES_DB:-shopsocial}"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
 
   redis:
     image: redis:7
@@ -62,6 +150,12 @@ services:
       - ./infrastructure/redis.conf:/usr/local/etc/redis/redis.conf
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 5s
 
 volumes:
   pgdata:

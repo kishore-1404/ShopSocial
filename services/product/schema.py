@@ -1,6 +1,8 @@
 import graphene
 from graphene import ObjectType, Field, List, Int, String, Float
-from models import Product, Category, ProductPost
+from graphql import GraphQLError
+
+from service import list_categories, list_posts, list_products, search_products
 
 
 class ProductPostType(graphene.ObjectType):
@@ -38,23 +40,29 @@ class Query(ObjectType):
 
     def resolve_products(self, info):
         db = info.context['db']
-        return db.query(Product).all()
+        return list_products(db)
 
     def resolve_categories(self, info):
         db = info.context['db']
-        return db.query(Category).all()
+        return list_categories(db)
 
     def resolve_posts(self, info):
         db = info.context['db']
-        return db.query(ProductPost).all()
+        return list_posts(db)
 
     def resolve_searchProducts(self, info, name=None, categoryId=None):
+        if categoryId is not None and categoryId <= 0:
+            raise GraphQLError("categoryId must be a positive integer")
+
+        normalized_name = None
+        if name is not None:
+            normalized_name = name.strip()
+            if len(normalized_name) > 200:
+                raise GraphQLError("name must be 200 characters or fewer")
+            if not normalized_name:
+                normalized_name = None
+
         db = info.context['db']
-        query = db.query(Product)
-        if name:
-            query = query.filter(Product.name.ilike(f"%{name}%"))
-        if categoryId:
-            query = query.filter(Product.category_id == categoryId)
-        return query.all()
+        return search_products(db, name=normalized_name, category_id=categoryId)
 
 schema = graphene.Schema(query=Query)

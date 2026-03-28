@@ -1,18 +1,51 @@
 
 import asyncio
 import websockets
-import logging
 import json
 from collections import defaultdict
-from datetime import datetime
 
 import os
-import jwt
+import sys
+import uuid
+from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
-from models import Base, ChatMessage
+from models import Base
+SERVICES_DIR = Path(__file__).resolve().parent.parent
+if str(SERVICES_DIR) not in sys.path:
+    sys.path.append(str(SERVICES_DIR))
 
-logging.basicConfig(level=logging.INFO)
+from common.logging_service import bind_context, clear_context, configure_logging, get_logger
+from common.cache_service import get_cache_client
+from common.rate_limit import get_rate_limiter
+from service import (
+    extract_jwt_from_authorization_header,
+    extract_jwt_from_protocol_headers,
+    fetch_recent_history,
+    get_service_jwt_secret,
+    parse_json_payload,
+    save_chat_message,
+    validate_join_payload,
+    validate_message_payload,
+    validate_service_jwt,
+)
+
+configure_logging("chat")
+logger = get_logger(__name__, "chat")
+cache_client = get_cache_client()
+rate_limiter = get_rate_limiter()
+
+
+def _get_positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+        return value if value > 0 else default
+    except ValueError:
+        return default
+
+
+def _history_cache_ttl() -> int:
+    return _get_positive_int_env("CHAT_HISTORY_CACHE_TTL", 15)
 
 
 PORT = 9000
@@ -36,112 +69,148 @@ def create_tables():
 # room_id (product_id) -> set of websockets
 rooms = defaultdict(set)
 
-SERVICE_JWT_SECRET = os.environ.get("SERVICE_JWT_SECRET", "changeme")
 
-async def handler(websocket, path):
+def _request_header_values(websocket, header_name: str) -> list[str]:
+    request_headers = getattr(websocket, "request_headers", None)
+    if request_headers is not None:
+        values = request_headers.get_all(header_name)
+        return list(values) if values else []
+
+    request = getattr(websocket, "request", None)
+    if request is not None and getattr(request, "headers", None) is not None:
+        values = request.headers.get_all(header_name)
+        return list(values) if values else []
+
+    return []
+
+
+def _request_header_value(websocket, header_name: str) -> str | None:
+    values = _request_header_values(websocket, header_name)
+    return values[0] if values else None
+
+async def handler(websocket, path=None):
     db = SessionLocal()
+    service_secret = get_service_jwt_secret(os.environ)
+
     # Expect JWT in Sec-WebSocket-Protocol header as 'jwt=<token>'
-    jwt_token = None
-    for proto in websocket.request_headers.get_all('Sec-WebSocket-Protocol', []):
-        if proto.startswith('jwt='):
-            jwt_token = proto[4:]
-            break
+    jwt_token = extract_jwt_from_protocol_headers(
+        _request_header_values(websocket, "Sec-WebSocket-Protocol")
+    )
+    if not jwt_token:
+        jwt_token = extract_jwt_from_authorization_header(
+            _request_header_value(websocket, "Authorization")
+        )
     if not jwt_token:
         await websocket.close(code=4401, reason="Missing JWT")
+        logger.warning("missing_jwt", extra={"event": "auth_failed"})
         return
-    try:
-        jwt.decode(jwt_token, SERVICE_JWT_SECRET, algorithms=["HS256"])
-    except Exception as e:
-        await websocket.close(code=4401, reason=f"Invalid JWT: {str(e)}")
+    if not validate_service_jwt(jwt_token, service_secret):
+        await websocket.close(code=4401, reason="Invalid JWT")
+        logger.warning("invalid_jwt", extra={"event": "auth_failed"})
         return
+
     room_id = None
     try:
+        bind_context(connection_id=str(uuid.uuid4()))
         # Expect first message to be a join message: {"action": "join", "product_id": 123}
         join_msg = await websocket.recv()
-        join_data = json.loads(join_msg)
-        if join_data.get("action") != "join" or "product_id" not in join_data:
-            await websocket.send(json.dumps({"error": "Must join a product room first."}))
+        join_data = parse_json_payload(join_msg)
+        try:
+            room_id = validate_join_payload(join_data)
+        except ValueError as err:
+            await websocket.send(json.dumps({"error": str(err)}))
+            logger.warning("invalid_join_payload", extra={"event": "validation_failed"})
             return
 
-        room_id = str(join_data["product_id"])
         rooms[room_id].add(websocket)
-        logging.info(f"Client {websocket.remote_address} joined room {room_id}")
+        bind_context(room_id=room_id)
+        logger.info("joined_room", extra={"event": "joined_room"})
         await websocket.send(json.dumps({"info": f"Joined room {room_id}"}))
 
         # Send recent chat history (last 50 messages) from DB
-        recent_msgs = db.query(ChatMessage).filter(ChatMessage.room_id == room_id).order_by(ChatMessage.timestamp.desc()).limit(50).all()
-        if recent_msgs:
-            # Reverse to chronological order
-            msgs = [
-                {
-                    "room": m.room_id,
-                    "from": m.sender,
-                    "content": m.content,
-                    "timestamp": m.timestamp.isoformat() + "Z"
-                } for m in reversed(recent_msgs)
-            ]
+        msgs = fetch_recent_history(
+            db,
+            room_id,
+            cache_client=cache_client,
+            cache_ttl_seconds=_history_cache_ttl(),
+        )
+        if msgs:
             await websocket.send(json.dumps({"history": msgs}))
 
         async for message in websocket:
             try:
-                data = json.loads(message)
-                if data.get("action") == "message" and "content" in data:
-                    msg = ChatMessage(
+                data = parse_json_payload(message)
+                if data.get("action") == "message":
+                    message_limit = _get_positive_int_env("CHAT_MESSAGE_RATE_LIMIT", 120)
+                    message_window = _get_positive_int_env("CHAT_MESSAGE_RATE_WINDOW_SECONDS", 60)
+                    allowed, retry_after = rate_limiter.allow(
+                        f"chat:message:{room_id}:{websocket.remote_address}",
+                        message_limit,
+                        message_window,
+                    )
+                    if not allowed:
+                        logger.warning("rate_limit_exceeded", extra={"event": "rate_limited"})
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "error": "Rate limit exceeded",
+                                    "retry_after": retry_after,
+                                }
+                            )
+                        )
+                        continue
+
+                    content = validate_message_payload(data)
+                    msg_dict = save_chat_message(
+                        db,
                         room_id=room_id,
                         sender=str(websocket.remote_address),
-                        content=data["content"],
-                        timestamp=datetime.utcnow()
+                        content=content,
+                        cache_client=cache_client,
                     )
-                    db.add(msg)
-                    db.commit()
-                    # Prepare broadcast dict
-                    msg_dict = {
-                        "room": msg.room_id,
-                        "from": msg.sender,
-                        "content": msg.content,
-                        "timestamp": msg.timestamp.isoformat() + "Z"
-                    }
-                    logging.info(f"Broadcasting message in room {room_id}: {msg_dict}")
+                    logger.info("broadcast_message", extra={"event": "broadcast_message"})
                     # Broadcast to all in the same room
                     for conn in list(rooms[room_id]):
                         if conn.open:
                             try:
                                 await conn.send(json.dumps(msg_dict))
                             except Exception as send_err:
-                                logging.error(f"Send error: {send_err}")
+                                logger.error("send_error", extra={"event": "send_error"})
                 elif data.get("action") == "history":
                     # Client requests recent history from DB
-                    recent_msgs = db.query(ChatMessage).filter(ChatMessage.room_id == room_id).order_by(ChatMessage.timestamp.desc()).limit(50).all()
-                    msgs = [
-                        {
-                            "room": m.room_id,
-                            "from": m.sender,
-                            "content": m.content,
-                            "timestamp": m.timestamp.isoformat() + "Z"
-                        } for m in reversed(recent_msgs)
-                    ]
+                    msgs = fetch_recent_history(
+                        db,
+                        room_id,
+                        cache_client=cache_client,
+                        cache_ttl_seconds=_history_cache_ttl(),
+                    )
                     await websocket.send(json.dumps({"history": msgs}))
                 else:
                     await websocket.send(json.dumps({"error": "Invalid message format."}))
-            except Exception as e:
-                logging.error(f"Message handling error: {e}")
-                await websocket.send(json.dumps({"error": str(e)}))
+            except ValueError as err:
+                logger.warning("message_validation_error", extra={"event": "validation_failed"})
+                await websocket.send(json.dumps({"error": str(err)}))
+            except Exception as err:
+                logger.exception("message_handling_error", extra={"event": "message_handling_error"})
+                await websocket.send(json.dumps({"error": "Invalid message format."}))
     except websockets.ConnectionClosed:
-        logging.info(f"Client disconnected: {websocket.remote_address}")
-    except Exception as e:
-        logging.error(f"Unexpected error: {e}")
+        logger.info("client_disconnected", extra={"event": "client_disconnected"})
+    except Exception:
+        logger.exception("unexpected_handler_error", extra={"event": "unexpected_error"})
     finally:
         db.close()
         if room_id and websocket in rooms[room_id]:
             rooms[room_id].remove(websocket)
             if not rooms[room_id]:
                 del rooms[room_id]
+        clear_context()
 
 
 async def main():
+    get_service_jwt_secret(os.environ)
     create_tables()
     async with websockets.serve(handler, "0.0.0.0", PORT):
-        logging.info(f"WebSocket server started on port {PORT}")
+        logger.info("chat_server_started", extra={"event": "startup", "port": PORT})
         await asyncio.Future()  # run forever
 
 if __name__ == "__main__":

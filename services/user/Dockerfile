@@ -3,9 +3,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
+COPY user/requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && pip install -r /app/requirements.txt
-COPY . .
+COPY common /app/common
+COPY user /app
 
 EXPOSE 8000
 

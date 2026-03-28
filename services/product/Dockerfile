@@ -3,10 +3,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
+COPY product/requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && pip install -r /app/requirements.txt
-COPY . .
-COPY seed.py /app/seed.py
+COPY common /app/common
+COPY product /app
 
 EXPOSE 5000
 

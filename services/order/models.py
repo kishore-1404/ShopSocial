@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, Float, String, DateTime, Text
 from sqlalchemy.orm import declarative_base
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 
 Base = declarative_base()
@@ -12,16 +12,19 @@ class Order(Base):
     product_ids = Column(Text, nullable=False)  # Store as JSON string
     total = Column(Float, nullable=False)
     status = Column(String(32), nullable=False, default='pending')
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
     def to_dict(self):
+        created_at_iso = self.created_at.isoformat()
+        if created_at_iso.endswith("+00:00"):
+            created_at_iso = created_at_iso[:-6] + "Z"
         return {
             'id': self.id,
             'user_id': self.user_id,
             'product_ids': json.loads(self.product_ids),
             'total': self.total,
             'status': self.status,
-            'created_at': self.created_at.isoformat() + 'Z'
+            'created_at': created_at_iso
         }
 
     @staticmethod

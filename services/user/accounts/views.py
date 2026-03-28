@@ -1,147 +1,57 @@
+import os
 
-from rest_framework import permissions, status, generics, views
-from rest_framework.response import Response
 from django.contrib.auth.models import User
-from rest_framework.serializers import ModelSerializer, Serializer, IntegerField
+from rest_framework import generics, status, views
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from .models import Profile, Follower, Post, Like, Comment
+from rest_framework.response import Response
+
+from common.cache_service import get_cache_client
+
+from .serializers import (
+	CommentCreatePayloadSerializer,
+	CommentListQuerySerializer,
+	CommentSerializer,
+	FollowerSerializer,
+	PostIdPayloadSerializer,
+	PostSerializer,
+	ProfileSerializer,
+	ProfileUpdatePayloadSerializer,
+	RegisterSerializer,
+	UserIdPayloadSerializer,
+)
 from .service import (
-	create_user_with_profile, get_profile, update_profile,
-	follow_user, unfollow_user, get_feed,
-	like_post, unlike_post, add_comment, get_comments
+	add_comment,
+	follow_user,
+	get_comments,
+	get_feed,
+	get_followers,
+	get_following,
+	get_profile,
+	like_post,
+	unfollow_user,
+	unlike_post,
+	update_profile,
 )
 
-class CommentSerializer(ModelSerializer):
-	class Meta:
-		model = Comment
-		fields = ('id', 'user', 'post', 'content', 'created_at', 'updated_at')
 
-class CommentCreateView(views.APIView):
-	permission_classes = [IsAuthenticated]
+cache_client = get_cache_client()
 
-	def post(self, request):
-		post_id = request.data.get('post')
-		content = request.data.get('content')
-		if not post_id or not content:
-			return Response({'detail': 'post and content required'}, status=400)
-		comment, msg = add_comment(request.user, post_id, content)
-		if not comment:
-			return Response({'detail': msg}, status=404)
-		return Response(CommentSerializer(comment).data, status=201)
 
-class CommentListView(views.APIView):
-	permission_classes = [IsAuthenticated]
+def _feed_cache_ttl() -> int:
+	try:
+		value = int(os.environ.get("USER_FEED_CACHE_TTL", "30"))
+		return value if value > 0 else 30
+	except ValueError:
+		return 30
 
-	def get(self, request):
-		post_id = request.query_params.get('post_id')
-		if not post_id:
-			return Response({'detail': 'post_id required'}, status=400)
-		comments = get_comments(post_id)
-		return Response(CommentSerializer(comments, many=True).data)
 
-class LikeSerializer(ModelSerializer):
-	class Meta:
-		model = Like
-		fields = ('id', 'user', 'post', 'created_at')
+def _feed_cache_key(user_id: int) -> str:
+	return f"user:feed:{user_id}"
 
-class LikePostView(views.APIView):
-	permission_classes = [IsAuthenticated]
 
-	def post(self, request):
-		post_id = request.data.get('post_id')
-		if not post_id:
-			return Response({'detail': 'post_id required'}, status=400)
-		created, msg = like_post(request.user, post_id)
-		status_code = 201 if created else 400 if msg == 'Already liked' else 404
-		return Response({'detail': msg}, status=status_code)
+def _invalidate_feed_cache(user_id: int) -> None:
+	cache_client.delete(_feed_cache_key(user_id))
 
-class UnlikePostView(views.APIView):
-	permission_classes = [IsAuthenticated]
-
-	def post(self, request):
-		post_id = request.data.get('post_id')
-		if not post_id:
-			return Response({'detail': 'post_id required'}, status=400)
-		deleted, msg = unlike_post(request.user, post_id)
-		status_code = 200 if deleted else 400 if msg == 'Not liked' else 404
-		return Response({'detail': msg}, status=status_code)
-
-class PostSerializer(ModelSerializer):
-	class Meta:
-		model = Post
-		fields = ('id', 'user', 'content', 'created_at', 'updated_at')
-
-class FeedView(views.APIView):
-	permission_classes = [IsAuthenticated]
-
-	def get(self, request):
-		posts = get_feed(request.user)
-		return Response(PostSerializer(posts, many=True).data)
-
-# ...existing RegisterSerializer, RegisterView, ProfileSerializer, ProfileView...
-
-class FollowerSerializer(ModelSerializer):
-	class Meta:
-		model = Follower
-		fields = ('id', 'user', 'follows', 'created_at')
-
-class FollowUserSerializer(Serializer):
-	user_id = IntegerField()
-
-class FollowUserView(views.APIView):
-	permission_classes = [IsAuthenticated]
-
-	def post(self, request):
-		target_id = request.data.get('user_id')
-		if not target_id:
-			return Response({'detail': 'user_id required'}, status=400)
-		created, msg = follow_user(request.user, int(target_id))
-		status_code = 201 if created else 400 if msg == 'Already following' or msg == 'Cannot follow yourself' else 404
-		return Response({'detail': msg}, status=status_code)
-
-class UnfollowUserView(views.APIView):
-	permission_classes = [IsAuthenticated]
-
-	def post(self, request):
-		target_id = request.data.get('user_id')
-		if not target_id:
-			return Response({'detail': 'user_id required'}, status=400)
-		deleted, msg = unfollow_user(request.user, int(target_id))
-		status_code = 200 if deleted else 400 if msg == 'Not following' else 404
-		return Response({'detail': msg}, status=status_code)
-
-class FollowersListView(generics.ListAPIView):
-	serializer_class = FollowerSerializer
-	permission_classes = [IsAuthenticated]
-
-	def get_queryset(self):
-		return Follower.objects.filter(follows=self.request.user)
-
-class FollowingListView(generics.ListAPIView):
-	serializer_class = FollowerSerializer
-	permission_classes = [IsAuthenticated]
-
-	def get_queryset(self):
-		return Follower.objects.filter(user=self.request.user)
-from rest_framework import generics, status
-from rest_framework.response import Response
-from django.contrib.auth.models import User
-from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.serializers import ModelSerializer
-from .models import Profile
-
-class RegisterSerializer(ModelSerializer):
-	class Meta:
-		model = User
-		fields = ('username', 'password', 'email')
-		extra_kwargs = {'password': {'write_only': True}}
-
-	def create(self, validated_data):
-		return create_user_with_profile(
-			username=validated_data['username'],
-			password=validated_data['password'],
-			email=validated_data.get('email', '')
-		)
 
 class RegisterView(generics.CreateAPIView):
 	queryset = User.objects.all()
@@ -149,17 +59,24 @@ class RegisterView(generics.CreateAPIView):
 	permission_classes = [AllowAny]
 
 	def create(self, request, *args, **kwargs):
-		response = super().create(request, *args, **kwargs)
-		# Add user id to response if registration succeeded
-		if response.status_code == 201:
-			user = User.objects.get(username=request.data['username'])
-			response.data['id'] = user.id
-		return response
+		serializer = self.get_serializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		self.perform_create(serializer)
+		headers = self.get_success_headers(serializer.data)
 
-class ProfileSerializer(ModelSerializer):
-	class Meta:
-		model = Profile
-		fields = ('bio', 'avatar', 'location', 'created_at', 'updated_at')
+		response_data = dict(serializer.data)
+		if serializer.instance is not None:
+			response_data["id"] = serializer.instance.id
+		return Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
+
+
+def _validation_error_response(serializer, default_detail: str) -> Response:
+	"""Return a uniform validation error shape across payload/query serializers."""
+	return Response(
+		{"detail": default_detail, "errors": serializer.errors},
+		status=status.HTTP_400_BAD_REQUEST,
+	)
+
 
 class ProfileView(views.APIView):
 	permission_classes = [IsAuthenticated]
@@ -169,11 +86,161 @@ class ProfileView(views.APIView):
 		return Response(ProfileSerializer(profile).data)
 
 	def put(self, request):
-		data = request.data
-		profile = update_profile(
+		payload = ProfileUpdatePayloadSerializer(data=request.data)
+		if not payload.is_valid():
+			return _validation_error_response(payload, "invalid profile payload")
+
+		updated_profile = update_profile(
 			request.user,
-			bio=data.get('bio'),
-			avatar=data.get('avatar'),
-			location=data.get('location')
+			bio=payload.validated_data.get("bio"),
+			avatar=payload.validated_data.get("avatar"),
+			location=payload.validated_data.get("location"),
 		)
-		return Response(ProfileSerializer(profile).data)
+		return Response(ProfileSerializer(updated_profile).data)
+
+
+class FollowUserView(views.APIView):
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request):
+		payload = UserIdPayloadSerializer(data=request.data)
+		if not payload.is_valid():
+			return _validation_error_response(payload, "invalid follow payload")
+
+		created, message = follow_user(request.user, payload.validated_data["user_id"])
+		status_code = (
+			status.HTTP_201_CREATED
+			if created
+			else status.HTTP_400_BAD_REQUEST
+			if message in ("Already following", "Cannot follow yourself")
+			else status.HTTP_404_NOT_FOUND
+		)
+		_invalidate_feed_cache(request.user.id)
+		return Response({"detail": message}, status=status_code)
+
+
+class UnfollowUserView(views.APIView):
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request):
+		payload = UserIdPayloadSerializer(data=request.data)
+		if not payload.is_valid():
+			return _validation_error_response(payload, "invalid unfollow payload")
+
+		deleted, message = unfollow_user(request.user, payload.validated_data["user_id"])
+		status_code = (
+			status.HTTP_200_OK
+			if deleted
+			else status.HTTP_400_BAD_REQUEST
+			if message == "Not following"
+			else status.HTTP_404_NOT_FOUND
+		)
+		_invalidate_feed_cache(request.user.id)
+		return Response({"detail": message}, status=status_code)
+
+
+class FollowersListView(generics.ListAPIView):
+	serializer_class = FollowerSerializer
+	permission_classes = [IsAuthenticated]
+
+	def get_queryset(self):
+		return get_followers(self.request.user)
+
+
+class FollowingListView(generics.ListAPIView):
+	serializer_class = FollowerSerializer
+	permission_classes = [IsAuthenticated]
+
+	def get_queryset(self):
+		return get_following(self.request.user)
+
+
+class FeedView(views.APIView):
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request):
+		cached_feed = cache_client.get_json(_feed_cache_key(request.user.id))
+		if isinstance(cached_feed, list):
+			response = Response(cached_feed)
+			response["X-Cache"] = "HIT"
+			return response
+
+		posts = get_feed(request.user)
+		serialized_posts = PostSerializer(posts, many=True).data
+		cache_client.set_json(_feed_cache_key(request.user.id), serialized_posts, _feed_cache_ttl())
+
+		response = Response(serialized_posts)
+		response["X-Cache"] = "MISS"
+		return response
+
+
+class LikePostView(views.APIView):
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request):
+		payload = PostIdPayloadSerializer(data=request.data)
+		if not payload.is_valid():
+			return _validation_error_response(payload, "invalid like payload")
+
+		created, message = like_post(request.user, payload.validated_data["post_id"])
+		status_code = (
+			status.HTTP_201_CREATED
+			if created
+			else status.HTTP_400_BAD_REQUEST
+			if message == "Already liked"
+			else status.HTTP_404_NOT_FOUND
+		)
+		_invalidate_feed_cache(request.user.id)
+		return Response({"detail": message}, status=status_code)
+
+
+class UnlikePostView(views.APIView):
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request):
+		payload = PostIdPayloadSerializer(data=request.data)
+		if not payload.is_valid():
+			return _validation_error_response(payload, "invalid unlike payload")
+
+		deleted, message = unlike_post(request.user, payload.validated_data["post_id"])
+		status_code = (
+			status.HTTP_200_OK
+			if deleted
+			else status.HTTP_400_BAD_REQUEST
+			if message == "Not liked"
+			else status.HTTP_404_NOT_FOUND
+		)
+		_invalidate_feed_cache(request.user.id)
+		return Response({"detail": message}, status=status_code)
+
+
+class CommentCreateView(views.APIView):
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request):
+		payload = CommentCreatePayloadSerializer(data=request.data)
+		if not payload.is_valid():
+			return _validation_error_response(payload, "invalid comment payload")
+
+		comment, message = add_comment(
+			request.user,
+			payload.validated_data["post"],
+			payload.validated_data["content"],
+		)
+		if comment is None:
+			return Response({"detail": message}, status=status.HTTP_404_NOT_FOUND)
+
+		_invalidate_feed_cache(request.user.id)
+		return Response(CommentSerializer(comment).data, status=status.HTTP_201_CREATED)
+
+
+class CommentListView(views.APIView):
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request):
+		payload = CommentListQuerySerializer(data=request.query_params)
+		if not payload.is_valid():
+			return _validation_error_response(payload, "invalid comment query")
+
+		comments = get_comments(payload.validated_data["post_id"])
+		return Response(CommentSerializer(comments, many=True).data)
